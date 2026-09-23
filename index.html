@@ -2,7 +2,7 @@
 <html lang="ja">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
 <title>バルーンファインド</title>
 <style>
   html,body{margin:0;padding:0;overflow:hidden;background:#0a0e14;font-family:'Segoe UI',sans-serif;color:#eee;}
@@ -27,6 +27,21 @@
   #resultBox{position:fixed;inset:0;background:rgba(5,8,12,.88);display:none;align-items:center;justify-content:center;flex-direction:column;z-index:40;pointer-events:auto;}
   #resultBox h2{font-size:36px;color:#ffd27f;margin-bottom:10px;}
   #resultBox p{color:#cde;margin-bottom:18px;font-size:15px;}
+
+  #lookArea{position:absolute;top:0;right:0;bottom:0;left:38%;pointer-events:none;touch-action:none;display:none;}
+  #joystick{position:absolute;left:calc(26px + env(safe-area-inset-left,0px));bottom:calc(26px + env(safe-area-inset-bottom,0px));width:120px;height:120px;border-radius:50%;background:rgba(255,255,255,.08);border:2px solid rgba(255,255,255,.28);display:none;pointer-events:auto;touch-action:none;}
+  #joyKnob{position:absolute;left:38px;top:38px;width:44px;height:44px;border-radius:50%;background:rgba(127,212,255,.6);border:1px solid rgba(255,255,255,.5);}
+  @media (max-width:640px){
+    #hud{top:calc(8px + env(safe-area-inset-top,0px));left:8px;padding:8px 12px;font-size:12px;min-width:160px;}
+    #timer{font-size:20px;}
+    #phaseLabel{font-size:13px;}
+    #msg{top:calc(8px + env(safe-area-inset-top,0px));font-size:12px;padding:8px 14px;max-width:60vw;}
+    #pipWrap{top:calc(8px + env(safe-area-inset-top,0px));right:8px;}
+    #pip{width:150px;height:90px;}
+    #menu h1{font-size:28px;}
+    #menu p{font-size:13px;padding:0 20px;text-align:center;}
+    #startBtn{padding:12px 32px;font-size:16px;}
+  }
 </style>
 </head>
 <body>
@@ -56,6 +71,8 @@
   <div id="msg" style="display:none;"></div>
   <div id="pipWrap"><span>相手の視点</span><canvas id="pip"></canvas></div>
   <div id="crosshair"></div>
+  <div id="lookArea"></div>
+  <div id="joystick"><div id="joyKnob"></div></div>
 </div>
 <div id="configWarn"></div>
 
@@ -156,6 +173,7 @@ let oppTarget = {x:0,y:0.9,z:0,ry:0};
 let oppDisplay = {x:0,y:0.9,z:0,ry:0};
 
 // ---------- 操作 ----------
+const isMobile = ('ontouchstart' in window) || navigator.maxTouchPoints>0;
 const keys = {};
 document.addEventListener('keydown', e=>keys[e.code]=true);
 document.addEventListener('keyup', e=>keys[e.code]=false);
@@ -167,7 +185,61 @@ document.addEventListener('mousemove', e=>{
   pitch = Math.max(-1.4, Math.min(1.4, pitch));
   camera.rotation.y = yaw; camera.rotation.x = pitch;
 });
-canvas.addEventListener('click', ()=>{ if(phase==='hiding'||phase==='seeking') canvas.requestPointerLock(); });
+canvas.addEventListener('click', ()=>{ if(!isMobile && (phase==='hiding'||phase==='seeking')) canvas.requestPointerLock(); });
+
+// --- モバイル用：仮想スティック（移動）＋ドラッグ視点操作 ---
+const joyEl = $('joystick'), joyKnob = $('joyKnob'), lookEl = $('lookArea');
+let moveVec = {x:0,y:0};
+let joyTouchId=null, joyCenter={x:0,y:0};
+let lookTouchId=null, lookLast={x:0,y:0};
+
+function setMobileUiVisible(v){
+  joyEl.style.display = v ? 'block' : 'none';
+  lookEl.style.display = v ? 'block' : 'none';
+}
+
+if(isMobile){
+  joyEl.addEventListener('touchstart', e=>{
+    e.preventDefault();
+    const t = e.changedTouches[0];
+    joyTouchId = t.identifier;
+    const r = joyEl.getBoundingClientRect();
+    joyCenter = {x:r.left+r.width/2, y:r.top+r.height/2};
+  }, {passive:false});
+  window.addEventListener('touchmove', e=>{
+    for(const t of e.changedTouches){
+      if(t.identifier===joyTouchId){
+        let dx=t.clientX-joyCenter.x, dy=t.clientY-joyCenter.y;
+        const max=45, dist=Math.hypot(dx,dy);
+        if(dist>max){ dx=dx/dist*max; dy=dy/dist*max; }
+        joyKnob.style.left = (38+dx)+'px'; joyKnob.style.top = (38+dy)+'px';
+        moveVec.x = dx/max; moveVec.y = -dy/max;
+      } else if(t.identifier===lookTouchId){
+        const dx = t.clientX-lookLast.x, dy = t.clientY-lookLast.y;
+        yaw -= dx*0.0032; pitch -= dy*0.0032;
+        pitch = Math.max(-1.4, Math.min(1.4, pitch));
+        camera.rotation.y = yaw; camera.rotation.x = pitch;
+        lookLast = {x:t.clientX, y:t.clientY};
+      }
+    }
+  }, {passive:false});
+  window.addEventListener('touchend', e=>{
+    for(const t of e.changedTouches){
+      if(t.identifier===joyTouchId){
+        joyTouchId=null; moveVec={x:0,y:0};
+        joyKnob.style.left='38px'; joyKnob.style.top='38px';
+      }
+      if(t.identifier===lookTouchId){ lookTouchId=null; }
+    }
+  });
+  lookEl.addEventListener('touchstart', e=>{
+    e.preventDefault();
+    if(lookTouchId!==null) return;
+    const t = e.changedTouches[0];
+    lookTouchId = t.identifier;
+    lookLast = {x:t.clientX, y:t.clientY};
+  }, {passive:false});
+}
 
 function movePlayer(dt){
   if(phase!=='hiding' && phase!=='seeking') return;
@@ -179,8 +251,13 @@ function movePlayer(dt){
   if(keys['KeyS']) mv.sub(fwd);
   if(keys['KeyD']) mv.add(right);
   if(keys['KeyA']) mv.sub(right);
+  if(isMobile){
+    mv.add(fwd.clone().multiplyScalar(moveVec.y));
+    mv.add(right.clone().multiplyScalar(moveVec.x));
+  }
   if(mv.lengthSq()>0){
-    mv.normalize().multiplyScalar(speed*dt);
+    if(mv.length()>1) mv.normalize();
+    mv.multiplyScalar(speed*dt);
     camera.position.add(mv);
     camera.position.x = Math.max(-28,Math.min(28,camera.position.x));
     camera.position.z = Math.max(-28,Math.min(28,camera.position.z));
@@ -217,7 +294,7 @@ function startMatch(){
       const unsub = matchRef.onSnapshot(s=>{
         const d = s.data();
         if(d && d.roomId){ unsub(); waitRef.delete().catch(()=>{}); joinRoom(d.roomId); }
-      });
+      }, err=>{ setStatus('通信エラー: '+err.message+' → CPU対戦を開始します'); startCpuRoom(); });
       setTimeout(()=>{
         waitRef.get().then(s=>{
           if(s.exists && s.data().uid===myUid){
@@ -226,9 +303,9 @@ function startMatch(){
               if(!s2.exists || !s2.data() || !s2.data().roomId){
                 unsub(); setStatus('相手が見つからないためCPU対戦を開始します'); startCpuRoom();
               }
-            });
+            }).catch(()=>{ unsub(); startCpuRoom(); });
           }
-        });
+        }).catch(()=>{});
       }, 8000);
     } else {
       // 誰かが既に待機中 → 自分が2人目としてルーム作成
@@ -246,8 +323,11 @@ function startMatch(){
         db.collection('lobby_matched').doc(myUid).set({roomId:rid});
         waitRef.delete().catch(()=>{});
         joinRoom(rid);
-      });
+      }).catch(err=>{ setStatus('ルーム作成エラー: '+err.message+' → CPU対戦を開始します'); startCpuRoom(); });
     }
+  }).catch(err=>{
+    setStatus('Firestoreエラー: '+err.message+' → CPU対戦を開始します');
+    startCpuRoom();
   });
 }
 
@@ -293,6 +373,7 @@ function enterGame(){
   $('menu').style.display='none';
   camera.position.set((Math.random()-0.5)*10, 1.6, (Math.random()-0.5)*10);
   yaw=0; pitch=0;
+  if(isMobile) setMobileUiVisible(true);
 }
 
 function myRole(){ return myUid===hiderUid ? 'hider' : 'seeker'; }
