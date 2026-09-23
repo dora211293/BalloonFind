@@ -1,0 +1,510 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>バルーンファインド</title>
+<style>
+  html,body{margin:0;padding:0;overflow:hidden;background:#0a0e14;font-family:'Segoe UI',sans-serif;color:#eee;}
+  #game{display:block;width:100vw;height:100vh;}
+  #ui{position:fixed;top:0;left:0;width:100%;pointer-events:none;z-index:10;}
+  #hud{position:absolute;top:14px;left:14px;background:rgba(10,14,20,.72);border:1px solid #2a3a4a;border-radius:10px;padding:10px 16px;font-size:14px;line-height:1.7;min-width:220px;}
+  #hud b{color:#7fd4ff;}
+  #timer{font-size:28px;font-weight:700;color:#ffd27f;}
+  #phaseLabel{font-size:16px;font-weight:700;letter-spacing:1px;}
+  #msg{position:absolute;top:14px;left:50%;transform:translateX(-50%);background:rgba(10,14,20,.85);border:1px solid #2a3a4a;border-radius:10px;padding:10px 22px;font-size:15px;text-align:center;max-width:70vw;}
+  #pipWrap{position:absolute;top:14px;right:14px;border:2px solid #7fd4ff;border-radius:8px;overflow:hidden;box-shadow:0 0 18px rgba(127,212,255,.5);display:none;}
+  #pipWrap span{position:absolute;top:2px;left:6px;font-size:11px;color:#7fd4ff;background:rgba(0,0,0,.5);padding:1px 6px;border-radius:4px;z-index:2;}
+  #pip{width:260px;height:150px;display:block;}
+  #crosshair{position:absolute;top:50%;left:50%;width:6px;height:6px;margin:-3px 0 0 -3px;border-radius:50%;background:#fff8;}
+  #menu{position:fixed;inset:0;background:radial-gradient(circle at 50% 40%,#132436,#05080c 70%);display:flex;flex-direction:column;align-items:center;justify-content:center;z-index:30;pointer-events:auto;}
+  #menu h1{font-size:42px;background:linear-gradient(90deg,#7fd4ff,#ff9ecf);-webkit-background-clip:text;background-clip:text;color:transparent;margin-bottom:6px;}
+  #menu p{color:#9fb3c8;margin-bottom:24px;}
+  #startBtn{padding:14px 40px;font-size:18px;border:none;border-radius:30px;background:linear-gradient(90deg,#3aa0ff,#7fd4ff);color:#05121e;font-weight:700;cursor:pointer;box-shadow:0 4px 20px rgba(63,160,255,.4);}
+  #startBtn:disabled{opacity:.5;cursor:default;}
+  #status{margin-top:16px;color:#7fd4ff;font-size:14px;min-height:20px;}
+  #configWarn{position:fixed;bottom:10px;left:10px;right:10px;font-size:12px;color:#ff8f8f;text-align:center;pointer-events:none;}
+  #resultBox{position:fixed;inset:0;background:rgba(5,8,12,.88);display:none;align-items:center;justify-content:center;flex-direction:column;z-index:40;pointer-events:auto;}
+  #resultBox h2{font-size:36px;color:#ffd27f;margin-bottom:10px;}
+  #resultBox p{color:#cde;margin-bottom:18px;font-size:15px;}
+</style>
+</head>
+<body>
+
+<div id="menu">
+  <h1>🎈 バルーンファインド</h1>
+  <p>1v1 3Dかくれんぼ ー 片方が風船を隠し、もう片方が探す</p>
+  <button id="startBtn">対戦を始める</button>
+  <div id="status"></div>
+</div>
+
+<div id="resultBox">
+  <h2 id="resultTitle"></h2>
+  <p id="resultDesc"></p>
+  <button id="resultBtn" style="padding:10px 28px;border:none;border-radius:24px;background:#3aa0ff;color:#04121e;font-weight:700;cursor:pointer;">次へ</button>
+</div>
+
+<canvas id="game"></canvas>
+
+<div id="ui">
+  <div id="hud">
+    <div id="phaseLabel">待機中</div>
+    <div id="timer">--</div>
+    <div>ラウンド <b id="roundNo">1</b>/2　役割: <b id="myRole">-</b></div>
+    <div>スコア　あなた <b id="myScore">0</b> - <b id="oppScore">0</b> 相手</div>
+  </div>
+  <div id="msg" style="display:none;"></div>
+  <div id="pipWrap"><span>相手の視点</span><canvas id="pip"></canvas></div>
+  <div id="crosshair"></div>
+</div>
+<div id="configWarn"></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore-compat.js"></script>
+
+<script>
+/* ============================================================
+   ★★★ ここに自分の Firebase プロジェクト設定を入れてください ★★★
+   Firebaseコンソール → プロジェクトの設定 → 全般 → マイアプリ(Web)
+   Firestore Database を有効化し、開発中はルールを下記のようにしておくこと：
+   rules_version = '2';
+   service cloud.firestore {
+     match /databases/{database}/documents {
+       match /{document=**} { allow read, write: if true; }
+     }
+   }
+   ============================================================ */
+const firebaseConfig = {
+  apiKey: "AIzaSyC8WF-MQ6Exv7nMAI6bVwNDGH_Xiu01HVI",
+  authDomain: "balloonfind-46157.firebaseapp.com",
+  projectId: "balloonfind-46157",
+};
+
+let db = null, dbOK = false;
+try {
+  firebase.initializeApp(firebaseConfig);
+  db = firebase.firestore();
+  dbOK = true;
+} catch(e) {
+  document.getElementById('configWarn').textContent =
+    'Firebase設定が未入力のため、CPU対戦のみ利用できます。ファイル冒頭の firebaseConfig を編集してください。';
+}
+
+// ---------- 基本セットアップ ----------
+const myUid = 'p_' + Math.random().toString(36).slice(2,10);
+let roomId=null, hostUid=null, hiderUid=null, seekerUid=null, oppUid=null, isCpuRoom=false, round=1;
+let phase='idle', phaseEndAt=0, balloonPos=null;
+let myScore=0, oppScore=0;
+let cpu = { state:'idle', targetSpot:null, delay:0 };
+
+const canvas = document.getElementById('game');
+const renderer = new THREE.WebGLRenderer({canvas, antialias:true});
+renderer.setSize(innerWidth, innerHeight);
+renderer.shadowMap.enabled = true;
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x0d1522);
+scene.fog = new THREE.Fog(0x0d1522, 8, 26);
+
+const camera = new THREE.PerspectiveCamera(75, innerWidth/innerHeight, 0.1, 200);
+camera.rotation.order = 'YXZ';
+camera.position.set(0, 1.6, 0);
+
+scene.add(new THREE.HemisphereLight(0x88aaff, 0x223344, 0.9));
+const sun = new THREE.DirectionalLight(0xffffff, 0.9);
+sun.position.set(20, 30, 10); sun.castShadow = true;
+scene.add(sun);
+
+// 地面
+const ground = new THREE.Mesh(
+  new THREE.PlaneGeometry(60,60),
+  new THREE.MeshStandardMaterial({color:0x1c2c22})
+);
+ground.rotation.x = -Math.PI/2; ground.receiveShadow = true;
+scene.add(ground);
+
+// 固定障害物レイアウト（両クライアント共通・隠れ場所になる）
+const OBSTACLES = [
+  {x:-10,z:-6,w:3,h:3,d:3,c:0x3a4a5a},{x:8,z:9,w:4,h:2,d:4,c:0x4a3a2a},
+  {x:14,z:-12,w:2,h:4,d:2,c:0x2a4a3a},{x:-16,z:10,w:5,h:2.5,d:2,c:0x4a2a3a},
+  {x:0,z:16,w:3,h:3,d:6,c:0x3a3a4a},{x:-6,z:0,w:2,h:2,d:2,c:0x5a4a2a},
+  {x:18,z:4,w:3,h:5,d:3,c:0x2a3a4a},{x:-20,z:-14,w:4,h:3,d:4,c:0x3a4a2a},
+  {x:5,z:-18,w:2,h:2,d:5,c:0x4a2a4a},{x:-4,z:-14,w:3,h:2,d:2,c:0x2a4a4a}
+];
+OBSTACLES.forEach(o=>{
+  const m = new THREE.Mesh(new THREE.BoxGeometry(o.w,o.h,o.d), new THREE.MeshStandardMaterial({color:o.c}));
+  m.position.set(o.x, o.h/2, o.z); m.castShadow=true; m.receiveShadow=true;
+  scene.add(m);
+});
+
+// 風船
+const balloonMat = new THREE.MeshStandardMaterial({color:0xff4d7a, emissive:0x661122, emissiveIntensity:0.5});
+const balloon = new THREE.Mesh(new THREE.SphereGeometry(0.4,16,16), balloonMat);
+balloon.visible = false;
+scene.add(balloon);
+
+// 相手アバター
+const oppMat = new THREE.MeshStandardMaterial({color:0x3aa0ff});
+const oppAvatar = new THREE.Group();
+const oppBody = new THREE.Mesh(new THREE.CapsuleGeometry(0.35,1.1,4,8), oppMat);
+oppBody.position.y = 0.9;
+oppAvatar.add(oppBody);
+oppAvatar.visible = false;
+scene.add(oppAvatar);
+let oppTarget = {x:0,y:0.9,z:0,ry:0};
+let oppDisplay = {x:0,y:0.9,z:0,ry:0};
+
+// ---------- 操作 ----------
+const keys = {};
+document.addEventListener('keydown', e=>keys[e.code]=true);
+document.addEventListener('keyup', e=>keys[e.code]=false);
+let yaw=0, pitch=0;
+document.addEventListener('mousemove', e=>{
+  if(document.pointerLockElement !== canvas) return;
+  yaw -= e.movementX * 0.0022;
+  pitch -= e.movementY * 0.0022;
+  pitch = Math.max(-1.4, Math.min(1.4, pitch));
+  camera.rotation.y = yaw; camera.rotation.x = pitch;
+});
+canvas.addEventListener('click', ()=>{ if(phase==='hiding'||phase==='seeking') canvas.requestPointerLock(); });
+
+function movePlayer(dt){
+  if(phase!=='hiding' && phase!=='seeking') return;
+  const speed = 5.5;
+  const fwd = new THREE.Vector3(-Math.sin(yaw),0,-Math.cos(yaw));
+  const right = new THREE.Vector3(Math.cos(yaw),0,-Math.sin(yaw));
+  let mv = new THREE.Vector3();
+  if(keys['KeyW']) mv.add(fwd);
+  if(keys['KeyS']) mv.sub(fwd);
+  if(keys['KeyD']) mv.add(right);
+  if(keys['KeyA']) mv.sub(right);
+  if(mv.lengthSq()>0){
+    mv.normalize().multiplyScalar(speed*dt);
+    camera.position.add(mv);
+    camera.position.x = Math.max(-28,Math.min(28,camera.position.x));
+    camera.position.z = Math.max(-28,Math.min(28,camera.position.z));
+  }
+  camera.position.y = 1.6;
+}
+
+// ---------- UI ヘルパ ----------
+const $ = id=>document.getElementById(id);
+function showMsg(t){ $('msg').style.display='block'; $('msg').textContent=t; }
+function hideMsg(){ $('msg').style.display='none'; }
+function setStatus(t){ $('status').textContent=t; }
+
+// ---------- マッチング ----------
+$('startBtn').addEventListener('click', startMatch);
+
+function startMatch(){
+  $('startBtn').disabled = true;
+  if(!dbOK){ setStatus('Firebase未設定 → CPU対戦を開始します'); startCpuRoom(); return; }
+  setStatus('対戦相手を探しています…');
+  const waitRef = db.collection('lobby').doc('waiting');
+  db.runTransaction(async tx=>{
+    const snap = await tx.get(waitRef);
+    if(!snap.exists || !snap.data()){
+      tx.set(waitRef, {uid:myUid, ts:Date.now()});
+      return {mine:true};
+    }
+    if(snap.data().uid===myUid) return {mine:true};
+    return {mine:false, other:snap.data().uid};
+  }).then(result=>{
+    if(result.mine){
+      // 自分が待機枠を確保 → matched通知を待つ
+      const matchRef = db.collection('lobby_matched').doc(myUid);
+      const unsub = matchRef.onSnapshot(s=>{
+        const d = s.data();
+        if(d && d.roomId){ unsub(); waitRef.delete().catch(()=>{}); joinRoom(d.roomId); }
+      });
+      setTimeout(()=>{
+        waitRef.get().then(s=>{
+          if(s.exists && s.data().uid===myUid){
+            waitRef.delete().catch(()=>{});
+            matchRef.get().then(s2=>{
+              if(!s2.exists || !s2.data() || !s2.data().roomId){
+                unsub(); setStatus('相手が見つからないためCPU対戦を開始します'); startCpuRoom();
+              }
+            });
+          }
+        });
+      }, 8000);
+    } else {
+      // 誰かが既に待機中 → 自分が2人目としてルーム作成
+      const other = result.other;
+      const rid = 'r_'+Math.random().toString(36).slice(2,10);
+      const host = other < myUid ? other : myUid;
+      const hider = Math.random()<0.5 ? other : myUid;
+      const seeker = hider===other ? myUid : other;
+      db.collection('rooms').doc(rid).set({
+        hostUid:host, hiderUid:hider, seekerUid:seeker, round:1,
+        phase:'hiding', phaseEndAt: Date.now()+30000, cpu:false,
+        scores:{}, foundClaim:false, players:{}
+      }).then(()=>{
+        db.collection('lobby_matched').doc(other).set({roomId:rid});
+        db.collection('lobby_matched').doc(myUid).set({roomId:rid});
+        waitRef.delete().catch(()=>{});
+        joinRoom(rid);
+      });
+    }
+  });
+}
+
+function startCpuRoom(){
+  isCpuRoom = true;
+  roomId = 'cpu_'+myUid; hostUid = myUid; oppUid = 'CPU';
+  round = 1;
+  hiderUid = Math.random()<0.5 ? myUid : 'CPU';
+  seekerUid = hiderUid===myUid ? 'CPU' : myUid;
+  phase='hiding'; phaseEndAt = Date.now()+30000;
+  enterGame();
+}
+
+function joinRoom(rid){
+  roomId = rid; isCpuRoom=false;
+  const roomRef = db.collection('rooms').doc(rid);
+  roomRef.onSnapshot(snap=>{
+    const r = snap.data(); if(!r) return;
+    hostUid=r.hostUid; hiderUid=r.hiderUid; seekerUid=r.seekerUid; round=r.round||1;
+    phase=r.phase; phaseEndAt=r.phaseEndAt||0;
+    oppUid = hiderUid===myUid ? seekerUid : hiderUid;
+    myScore = (r.scores && r.scores[myUid]) || 0;
+    oppScore = (r.scores && r.scores[oppUid]) || 0;
+    if(r.balloon){ balloonPos=r.balloon; } else balloonPos=null;
+    if(r.phase==='hiding') balloon.visible=false;
+    if(r.players && oppUid && r.players[oppUid]){
+      const p = r.players[oppUid];
+      oppTarget = {x:p.x, y:0.9, z:p.z, ry:p.ry};
+    }
+    if(r.phase==='gameover') showFinalResult(r);
+    else if(r.phase==='roundend') showRoundResult(r);
+    // ホスト権限：foundClaim を監視して探索フェーズを終了させる
+    if(hostUid===myUid && r.foundClaim && r.phase==='seeking'){
+      endRound(myUid===seekerUid ? myUid : seekerUid, true);
+    }
+  });
+  enterGame();
+}
+
+// ---------- ゲーム進行 ----------
+let lastSync=0;
+function enterGame(){
+  $('menu').style.display='none';
+  camera.position.set((Math.random()-0.5)*10, 1.6, (Math.random()-0.5)*10);
+  yaw=0; pitch=0;
+}
+
+function myRole(){ return myUid===hiderUid ? 'hider' : 'seeker'; }
+
+function syncSelf(){
+  if(!dbOK || isCpuRoom) return;
+  const now=performance.now();
+  if(now-lastSync < 150) return;
+  lastSync = now;
+  db.collection('rooms').doc(roomId).update({
+    ['players.'+myUid]: {x:camera.position.x, z:camera.position.z, ry:yaw}
+  }).catch(()=>{});
+}
+
+function finalizeHideAsHost(x,z){
+  if(isCpuRoom){
+    balloonPos={x,z}; phase='seeking'; phaseEndAt=Date.now()+60000; balloon.visible=true;
+    balloon.position.set(x,0.4,z);
+    cpu.state = seekerUid==='CPU' ? 'seek' : 'wait_seek';
+    return;
+  }
+  db.collection('rooms').doc(roomId).update({balloon:{x,z}, phase:'seeking', phaseEndAt:Date.now()+60000, foundClaim:false});
+}
+
+function endRound(winnerUid, found){
+  const myWon = winnerUid===myUid;
+  if(isCpuRoom){
+    if(myWon) myScore++; else oppScore++;
+    if(round>=2){ phase='gameover'; showFinalResult({scores:{[myUid]:myScore,[oppUid]:oppScore}}); }
+    else {
+      round=2; const nh = hiderUid; hiderUid=seekerUid; seekerUid=nh;
+      phase='hiding'; phaseEndAt=Date.now()+30000; balloonPos=null; balloon.visible=false;
+      showRoundResult({round:1, winner: myWon? 'you':'opp'});
+      cpu.state = hiderUid==='CPU' ? 'hide' : 'idle';
+    }
+    return;
+  }
+  const roomRef = db.collection('rooms').doc(roomId);
+  roomRef.get().then(s=>{
+    const r = s.data(); const sc = r.scores||{};
+    sc[winnerUid] = (sc[winnerUid]||0)+1;
+    if((r.round||1) >= 2){
+      roomRef.update({phase:'gameover', scores:sc});
+    } else {
+      roomRef.update({
+        phase:'hiding', round:2, scores:sc,
+        balloon: firebase.firestore.FieldValue.delete(),
+        hiderUid:r.seekerUid, seekerUid:r.hiderUid,
+        phaseEndAt:Date.now()+30000, foundClaim:false
+      });
+    }
+  });
+}
+
+function showRoundResult(r){
+  $('resultBox').style.display='flex';
+  const iWon = (r.winner==='you');
+  $('resultTitle').textContent = (typeof r.winner==='string' ? iWon : false) ? 'ラウンド勝利！' : 'ラウンド終了';
+  $('resultDesc').textContent = '役割を交代して第2ラウンドへ';
+  $('resultBtn').onclick = ()=>{ $('resultBox').style.display='none'; document.exitPointerLock(); };
+}
+function showFinalResult(r){
+  $('resultBox').style.display='flex';
+  const sc = r.scores||{};
+  const mine = sc[myUid]||myScore, theirs = sc[oppUid]||oppScore;
+  $('resultTitle').textContent = mine>theirs ? '🎉 総合勝利！' : mine<theirs ? '敗北…' : '引き分け';
+  $('resultDesc').textContent = `最終スコア　あなた ${mine} - ${theirs} 相手`;
+  $('resultBtn').textContent = 'もう一度';
+  $('resultBtn').onclick = ()=>location.reload();
+}
+
+// ---------- CPU挙動 ----------
+function updateCpu(dt){
+  if(!isCpuRoom) return;
+  if(cpu.state==='hide'){
+    if(!cpu.targetSpot){
+      const o = OBSTACLES[Math.floor(Math.random()*OBSTACLES.length)];
+      cpu.targetSpot = {x:o.x+(Math.random()-0.5)*2, z:o.z+(Math.random()-0.5)*2};
+    }
+  }
+  if(cpu.state==='seek'){
+    if(!balloonPos) return;
+    // シンプルな追跡AI（多少の遅延と揺らぎ）
+    cpu.delay -= dt;
+    if(cpu.delay<=0){
+      cpu.delay = 2 + Math.random()*1.5;
+    }
+  }
+}
+
+// hiding フェーズでCPUが隠す（自分で位置固定）
+function cpuFinalizeIfNeeded(){
+  if(isCpuRoom && hiderUid==='CPU' && phase==='hiding' && cpu.targetSpot && !balloonPos){
+    // timer切れ時にhost(自分)が確定
+  }
+}
+
+// ---------- メインループ ----------
+const clock = new THREE.Clock();
+let cpuPos = {x:6,z:6}; // CPUの仮想位置(探索時)
+
+function tick(){
+  requestAnimationFrame(tick);
+  const dt = Math.min(clock.getDelta(), 0.1);
+
+  if(phase==='hiding' || phase==='seeking'){
+    movePlayer(dt);
+    syncSelf();
+  }
+
+  // フェーズタイマー処理（ホストのみが確定操作を行う）
+  if((phase==='hiding'||phase==='seeking') && Date.now()>=phaseEndAt){
+    if(phase==='hiding' && hostUid===myUid){
+      if(isCpuRoom && hiderUid==='CPU'){
+        const spot = cpu.targetSpot || {x:0,z:0};
+        finalizeHideAsHost(spot.x, spot.z);
+      } else if(hiderUid===myUid){
+        finalizeHideAsHost(camera.position.x, camera.position.z);
+      }
+    } else if(phase==='seeking' && hostUid===myUid){
+      endRound(hiderUid, false); // 時間切れ→隠した側の勝ち
+    }
+  }
+
+  // 相手アバター表示切替＆補間
+  oppAvatar.visible = (phase==='seeking');
+  balloon.visible = (phase==='seeking' && !!balloonPos);
+  if(balloonPos) balloon.position.set(balloonPos.x, 0.4, balloonPos.z);
+
+  if(!isCpuRoom && phase==='seeking'){
+    oppDisplay.x += (oppTarget.x-oppDisplay.x)*0.2;
+    oppDisplay.z += (oppTarget.z-oppDisplay.z)*0.2;
+    oppDisplay.ry += (oppTarget.ry-oppDisplay.ry)*0.2;
+    oppAvatar.position.set(oppDisplay.x, 0, oppDisplay.z);
+    oppAvatar.rotation.y = oppDisplay.ry;
+  }
+
+  // CPUロジック
+  if(isCpuRoom){
+    if(phase==='hiding' && hiderUid==='CPU' && !cpu.targetSpot){
+      const o = OBSTACLES[Math.floor(Math.random()*OBSTACLES.length)];
+      cpu.targetSpot = {x:o.x, z:o.z};
+    }
+    if(phase==='seeking' && seekerUid==='CPU' && balloonPos){
+      const dx=balloonPos.x-cpuPos.x, dz=balloonPos.z-cpuPos.z;
+      const dist=Math.hypot(dx,dz);
+      if(dist>0.3){
+        const sp=3.2*dt;
+        cpuPos.x += dx/dist*sp; cpuPos.z += dz/dist*sp;
+      }
+      oppDisplay.x = cpuPos.x; oppDisplay.z = cpuPos.z; oppDisplay.ry = Math.atan2(dx,dz);
+      oppAvatar.position.set(cpuPos.x,0,cpuPos.z); oppAvatar.rotation.y=oppDisplay.ry;
+      if(dist<1.4){ endRound(myUid===hiderUid? hiderUid: 'CPU', true); if(myUid===seekerUid) {} else endRound('CPU', true); }
+    }
+    if(phase==='seeking' && seekerUid===myUid && balloonPos){
+      const d = Math.hypot(camera.position.x-balloonPos.x, camera.position.z-balloonPos.z);
+      if(d<1.5) endRound(myUid, true);
+    } else if(!isCpuRoom && phase==='seeking' && seekerUid===myUid && balloonPos){
+      const d = Math.hypot(camera.position.x-balloonPos.x, camera.position.z-balloonPos.z);
+      if(d<1.5 && dbOK){ db.collection('rooms').doc(roomId).update({foundClaim:true}).catch(()=>{}); }
+    }
+  } else {
+    if(phase==='seeking' && seekerUid===myUid && balloonPos){
+      const d = Math.hypot(camera.position.x-balloonPos.x, camera.position.z-balloonPos.z);
+      if(d<1.5 && dbOK){ db.collection('rooms').doc(roomId).update({foundClaim:true}).catch(()=>{}); }
+    }
+  }
+
+  // HUD更新
+  updateHud();
+
+  // PIP：隠した側が相手視点を再現
+  const pipWrap = $('pipWrap');
+  if(phase==='seeking' && myUid===hiderUid){
+    pipWrap.style.display='block';
+    ghostCam.position.set(oppDisplay.x, 1.6, oppDisplay.z);
+    ghostCam.rotation.set(0, oppDisplay.ry, 0);
+    pipRenderer.render(scene, ghostCam);
+  } else pipWrap.style.display='none';
+
+  renderer.render(scene, camera);
+}
+
+function updateHud(){
+  const labels = {hiding:'🙈 隠しフェーズ', seeking:'🔍 探索フェーズ', roundend:'ラウンド終了', gameover:'試合終了', idle:'待機中'};
+  $('phaseLabel').textContent = labels[phase] || phase;
+  if(phase==='hiding'||phase==='seeking'){
+    const rem = Math.max(0, Math.ceil((phaseEndAt-Date.now())/1000));
+    $('timer').textContent = rem+'s';
+  } else $('timer').textContent='--';
+  $('roundNo').textContent = round;
+  $('myRole').textContent = myUid===hiderUid ? '隠す側' : (myUid===seekerUid ? '探す側':'-');
+  $('myScore').textContent = myScore;
+  $('oppScore').textContent = oppScore;
+  if(phase==='hiding'){
+    showMsg(myUid===hiderUid ? '風船を持って隠れ場所まで移動してください（時間切れでその場に固定）' : '相手が風船を隠しています…少々お待ちください');
+  } else if(phase==='seeking'){
+    showMsg(myUid===seekerUid ? '風船を探してください！近づくと発見できます' : '相手の視点を右上で観戦中です');
+  } else hideMsg();
+}
+
+// PIP用のゴーストカメラ＆レンダラ
+const ghostCam = new THREE.PerspectiveCamera(75, 260/150, 0.1, 200);
+const pipRenderer = new THREE.WebGLRenderer({canvas:$('pip'), antialias:true});
+pipRenderer.setSize(260,150);
+
+window.addEventListener('resize', ()=>{
+  camera.aspect = innerWidth/innerHeight; camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+
+tick();
+</script>
+</body>
+</html>
